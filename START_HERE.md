@@ -14,15 +14,15 @@ You must provision Kubernetes infrastructure for three clients, each with multip
 
 ### Clients and Environments
 
-|Client| Environments|
-|------|-------------|
-|AirBnB| Dev, Prod|
-|Nike| Dev, QA, Prod|
-|McDonalds| Dev, QA, Beta, Prod|
+| Client     | Environments           |
+|------------|------------------------|
+| AirBnB     | Dev, Prod              |
+| Nike       | Dev, QA, Prod          |
+| McDonalds  | Dev, QA, Beta, Prod    |
 
 Each environment represents an independent runtime context and must have its own Kubernetes cluster.
 
-### Functional Requirements
+## Functional Requirements
 
 For every client and environment, the platform must provide:
 
@@ -32,6 +32,7 @@ For every client and environment, the platform must provide:
 - Full isolation between:
   - Clients
   - Environments
+  - Application and database workloads
 
 ## Technical Requirements
 
@@ -43,7 +44,7 @@ You must implement a single Terraform project that:
 - Avoids duplication of Terraform resources
 - Allows adding new clients or environments by changing variables only
 
-➡️ No Terraform resource blocks should need modification when clients or environments change.
+No Terraform resource blocks should need modification when clients or environments change.
 
 ### 2. Kubernetes Cluster Provisioning
 
@@ -55,41 +56,42 @@ You must implement a single Terraform project that:
   - Configure access via kubeconfig
   - Manage Kubernetes resources using the Kubernetes provider
 
-> Manual cluster creation outside Terraform is not allowed.
+Manual cluster creation outside Terraform is not allowed.
 
 ### 3. Odoo Application Deployment
 
 For each Kubernetes cluster, Terraform must deploy:
 
 - An Odoo application
-- A Kubernetes Namespace following this pattern `client-environment`
-- A Deployment
-- A Service
+- A Kubernetes Namespace following this pattern: client-environment
+- An Odoo application Deployment
+- A Kubernetes Service for Odoo
+- A StatefulSet for the Odoo database with persistent storage
+- A Service for the database
 - An Ingress exposing the application publicly over HTTPS
-- Each deployment must be:
-  - Fully isolated
-  - Configurable per environment
-  - Deterministically named
 
-### 4. Domain Naming & DevContainer Validation
+Each deployment must be:
 
-All application access must follow this mandatory domain pattern `odoo.ENV.CLIENT.local`
+- Fully isolated
+- Configurable per environment
+- Deterministically named
+
+### 4. Domain Naming and DevContainer Validation
+
+All application access must follow this mandatory domain pattern:
+
+odoo.ENV.CLIENT.local
 
 Examples:
+- odoo.dev.nike.local
+- odoo.qa.mcdonalds.local
+- odoo.prod.airbnb.local
 
-```txt
-odoo.dev.nike.local
-odoo.qa.mcdonalds.local
-odoo.prod.airbnb.local
-```
-
-## Validation Process
+### Validation Process
 
 Since development occurs inside a DevContainer, validation will be performed by executing:
 
-```bash
 curl https://DOMAIN
-```
 
 For each client and environment.
 
@@ -97,9 +99,9 @@ To support this:
 
 - The student must edit /etc/hosts inside the DevContainer (via scripts)
 - All domains must resolve correctly to the appropriate cluster ingress
-- Each domain must route traffic to the correct Odoo instance
+- Each domain must route traffic to the correct Odoo instance and its corresponding database
 
-### 5. HTTPS & TLS Certificates
+### 5. HTTPS and TLS Certificates
 
 All applications must be exposed over HTTPS.
 
@@ -109,15 +111,15 @@ Terraform must be responsible for:
 - Managing Kubernetes Secret resources containing certificates
 - Binding certificates to the Ingress resources
 
-> Self-signed certificates are acceptable.
+Self-signed certificates are acceptable.
 
-➡️ HTTP-only access is not allowed.
+HTTP-only access is not allowed.
 
-### 6. Automation & Developer Experience
+### 6. Automation and Developer Experience
 
 The use of automation is strongly encouraged:
 
-- Makefile usage (e.g. make apply, make destroy, make validate)
+- Makefile usage (for example: make apply, make destroy, make validate)
 - Shell scripts to:
   - Bootstrap Minikube clusters
   - Update /etc/hosts
@@ -128,7 +130,7 @@ The use of automation is strongly encouraged:
 - CI/CD pipelines are out of scope
 - Helm is not required
 
-Code readability, structure and scalability are critical
+Code readability, structure and scalability are critical.
 
 ## Deliverables
 
@@ -136,10 +138,10 @@ The final submission must include:
 
 - A single Terraform project
 - A README.md explaining:
-- Architecture and design decisions
-- How to add a new client
-- How to add a new environment
-- How to validate deployments using `curl`
+  - Architecture and design decisions
+  - How to add a new client
+  - How to add a new environment
+  - How to validate deployments using curl
 - Terraform code that:
   - Provisions all Kubernetes clusters
   - Deploys Odoo to every environment
@@ -148,19 +150,17 @@ The final submission must include:
   - Makefiles
   - Shell scripts
 
-- All infrastructure must be created using a single terraform apply.
+All infrastructure must be created using a single terraform apply.
 
-# Evaluation Criteria (20 Points)
+## Evaluation Criteria (20 Points)
 
-|Criteria |Description |Points|
-|---------|------------|------|
-|Dynamic Terraform| Design Correct modelling of clients and environments using maps, loops and locals |6|
-|Cluster Provisioning with Minikube |Terraform-managed lifecycle of all Kubernetes clusters |4|
-|Kubernetes Application Deployment| Correct namespaces, deployments, services and ingress per environment| 3|
-|HTTPS & TLS Configuration |Proper certificate creation and secure ingress exposure| 3|
-|Automation & DX |Makefiles and scripts improving usability and reproducibility |2|
-|Documentation Quality |Clear, professional and complete README |1|
-|Naming & Consistency |Predictable, readable and scalable naming conventions| 1|
-|||Total 20|
-
-Good Luck 🤞
+| Criteria | Description | Points |
+|---------|------------|--------|
+| Dynamic Terraform | Correct modelling of clients and environments using maps, loops and locals | 6 |
+| Cluster Provisioning with Minikube | Terraform-managed lifecycle of all Kubernetes clusters | 4 |
+| Kubernetes Application Deployment | Correct namespaces, deployments, statefulsets, services and ingress per environment | 3 |
+| HTTPS and TLS Configuration | Proper certificate creation and secure ingress exposure | 3 |
+| Automation and DX | Makefiles and scripts improving usability and reproducibility | 2 |
+| Documentation Quality | Clear, professional and complete README | 1 |
+| Naming and Consistency | Predictable, readable and scalable naming conventions | 1 |
+| Total |  | 20 |
