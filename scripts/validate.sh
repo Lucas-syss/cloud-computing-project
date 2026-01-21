@@ -8,10 +8,6 @@ NC='\033[0m'
 
 echo "Starting Validation..."
 
-# Get all domains from the known logic or hardcoded list for validation
-# Or extract from main.tf/variables? 
-# Let's derive from the standard pattern since we know the inputs.
-
 DOMAINS=(
     "odoo.dev.airbnb.local"
     "odoo.prod.airbnb.local"

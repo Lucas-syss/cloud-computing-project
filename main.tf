@@ -1,21 +1,15 @@
 terraform {
-  required_version = ">= 1.0.0"
   required_providers {
     minikube = {
-      source  = "scott-the-programmer/minikube"
+      source = "scott-the-programmer/minikube"
       version = "0.4.4"
     }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = ">= 2.0.0"
+    }
     null = {
-      source  = "hashicorp/null"
-      version = ">= 3.0"
-    }
-    local = {
-      source  = "hashicorp/local"
-      version = ">= 2.0"
-    }
-    tls = {
-      source  = "hashicorp/tls"
-      version = ">= 4.0"
+      source = "hashicorp/null"
     }
   }
 }
@@ -24,113 +18,73 @@ provider "minikube" {
   kubernetes_version = "v1.30.0"
 }
 
-provider "null" {}
-provider "local" {}
-provider "tls" {}
-
-variable "clients" {
-  description = "Map of clients and their environments"
-  type = map(object({
-    environments = list(string)
-  }))
+# 1. Define the Data Structure (Clients and Environments)
+variable "client_config" {
+  type = map(list(string))
   default = {
-    "airbnb" = {
-      environments = ["dev", "prod"]
-    }
-    "nike" = {
-      environments = ["dev", "qa", "prod"]
-    }
-    "mcdonalds" = {
-      environments = ["dev", "qa", "beta", "prod"]
-    }
+    airbnb    = ["dev", "prod"]
+    nike      = ["dev", "qa", "prod"]
+    mcdonalds = ["dev", "qa", "beta", "prod"]
   }
 }
 
+# 2. Determine Scope based on Workspace
+# If workspace is "default", we default to empty or error out. 
+# We expect workspace to be "airbnb", "nike", or "mcdonalds".
 locals {
-  deployments = flatten([
-    for client_name, client_config in var.clients : [
-      for env in client_config.environments : {
-        client = client_name
-        env    = env
-        id     = "${client_name}-${env}"
-        domain = "odoo.${env}.${client_name}.local"
-      }
-    ]
-  ])
+  current_client = terraform.workspace
+  
+  # Look up the environments for the current workspace
+  # If workspace doesn't match a client key, return empty list (safe fallback)
+  environments = lookup(var.client_config, local.current_client, [])
 }
 
-# 1. Generate TLS Certificates for each domain
-resource "tls_private_key" "odoo" {
-  for_each  = { for item in local.deployments : item.id => item }
-  algorithm = "RSA"
-  rsa_bits  = 2048
-}
-
-resource "tls_self_signed_cert" "odoo" {
-  for_each        = { for item in local.deployments : item.id => item }
-  private_key_pem = tls_private_key.odoo[each.key].private_key_pem
-
-  subject {
-    common_name  = each.value.domain
-    organization = "Cloud Platform Engineering"
-  }
-
-  validity_period_hours = 8760 # 1 year
-
-  allowed_uses = [
-    "key_encipherment",
-    "digital_signature",
-    "server_auth",
-  ]
-}
-
-# 2. Provision Minikube Clusters
+# 3. Provision Clusters (Only for the active client)
 resource "minikube_cluster" "cluster" {
-  for_each = { for item in local.deployments : item.id => item }
+  for_each = toset(local.environments)
 
   driver       = "docker"
-  cluster_name = each.value.id
+  cluster_name = "${local.current_client}-${each.key}" # e.g. airbnb-dev
+  
+  # Increased memory to 1600mb to prevent Odoo Crashes
+  memory       = "1600mb"
+  cpus         = 2
+  
+  # Network settings
+  cni = "bridge"
   addons = [
     "ingress",
     "default-storageclass",
     "storage-provisioner"
   ]
-  
-  # Resource limits as per standard practice, configurable if needed but hardcoded for now
-  memory = "2048mb"
-  cpus   = 2
 }
 
-# 3. Deploy Odoo Application (Using shell script wrapper for kubectl)
-# We use this because the kubernetes provider cannot be dynamic in a for_each
+# 4. Deploy Odoo (Using the script)
 resource "null_resource" "odoo_deploy" {
-  for_each = { for item in local.deployments : item.id => item }
+  for_each = minikube_cluster.cluster
 
   depends_on = [minikube_cluster.cluster]
 
   triggers = {
-    cluster_name  = each.value.id
-    domain        = each.value.domain
-    cert_pem      = tls_self_signed_cert.odoo[each.key].cert_pem
-    key_pem       = tls_private_key.odoo[each.key].private_key_pem
-    template_hash = sha1(file("${path.module}/templates/odoo-stack.yaml.tmpl"))
-    script_hash   = sha1(file("${path.module}/scripts/deploy_odoo.sh"))
+    cluster_id  = each.value.cluster_name
+    # Update hash to force re-run when script changes
+    script_hash = filesha256("${path.module}/scripts/deploy_odoo.sh")
   }
 
   provisioner "local-exec" {
-    command = "bash ${path.module}/scripts/deploy_odoo.sh '${each.value.id}' '${each.value.client}' '${each.value.env}' '${each.value.domain}' '${base64encode(tls_self_signed_cert.odoo[each.key].cert_pem)}' '${base64encode(tls_private_key.odoo[each.key].private_key_pem)}'"
-  }
-}
+    # 1. Pass data securely via Environment Variables
+    environment = {
+      CLUSTER_NAME = each.value.cluster_name
+      CLIENT       = local.current_client
+      ENV          = each.key
+      DOMAIN       = "odoo.${each.key}.${local.current_client}.local"
+      # Terraform handles the multiline strings correctly here
+      KUBE_CERT    = minikube_cluster.cluster[each.key].client_certificate
+      KUBE_KEY     = minikube_cluster.cluster[each.key].client_key
+    }
 
-# 4. Update local /etc/hosts for validation
-resource "null_resource" "update_hosts" {
-  depends_on = [minikube_cluster.cluster] # Needs IPs
-  
-  triggers = {
-    always_run = timestamp()
-  }
-
-  provisioner "local-exec" {
-    command = "bash ${path.module}/scripts/update_hosts.sh"
+    # 2. Run the script WITHOUT passing arguments
+    # The script now reads the environment variables defined above
+    command = "bash ./scripts/deploy_odoo.sh"
   }
 }

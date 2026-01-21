@@ -1,61 +1,50 @@
 #!/bin/bash
 set -e
 
-# Path to the hosts file
-HOSTS_FILE="/etc/hosts"
-# Marker for our section
-START_MARKER="#### CLOUD-PROJ-START ####"
-END_MARKER="#### CLOUD-PROJ-END ####"
+echo "Fetching Minikube IPs for all clients..."
 
-# Create a temporary file for new hosts entries
-TEMP_HOSTS=$(mktemp)
+# Function to update a single entry safely in Docker
+update_host() {
+    local ip=$1
+    local domain=$2
+    
+    # 1. Copy current hosts to a temp file
+    cp /etc/hosts /tmp/hosts.tmp
+    
+    # 2. Remove old entry for this domain from the temp file
+    sed -i "/$domain/d" /tmp/hosts.tmp
+    
+    # 3. Append the new entry to the temp file
+    echo "$ip $domain" >> /tmp/hosts.tmp
+    
+    # 4. Overwrite /etc/hosts content with the temp file content
+    cat /tmp/hosts.tmp > /etc/hosts
+    
+    echo " + Added: $domain -> $ip"
+}
 
-echo "${START_MARKER}" > "${TEMP_HOSTS}"
-
-# Get all running minikube profiles and their IPs
-PROFILES=$(minikube profile list -o json | jq -r '.valid[] | .Name')
-
-for PROFILE in ${PROFILES}; do
-    IP=$(minikube ip -p "${PROFILE}")
-    # Extract client and env from profile name (format: client-env)
-    # But wait, the domain depends on the mapping in terraform.
-    # The profile name is client-env.
-    # The domain is odoo.env.client.local
-    
-    # Split profile by last hyphen to separate client and env?
-    # Actually, simplistic split might fail if client has hyphens.
-    # Assuming standard format from main.tf: ${client_name}-${env}
-    
-    # We can reconstruct because the profile IDs match the structure.
-    # But we need to perform the exact string manipulation.
-    # Easier: Just loop through the known domains? No, we need dynamic from minikube.
-    
-    # Let's rely on the profile name convention: CLIENT-ENV.
-    # If client is "airbnb" and env is "dev", profile is "airbnb-dev".
-    # Domain: odoo.dev.airbnb.local
-    
-    # Regex to capture parts. Assumes env doesn't have hyphens.
-    if [[ $PROFILE =~ ^(.+)-([^-]+)$ ]]; then
-        CLIENT="${BASH_REMATCH[1]}"
-        ENV="${BASH_REMATCH[2]}"
-        DOMAIN="odoo.${ENV}.${CLIENT}.local"
-        echo "${IP} ${DOMAIN}" >> "${TEMP_HOSTS}"
-    fi
+# 1. AIRBNB (Dev, Prod)
+for env in dev prod; do
+    cluster="airbnb-$env"
+    domain="odoo.$env.airbnb.local"
+    ip=$(minikube ip -p "$cluster" 2>/dev/null || echo "")
+    if [ ! -z "$ip" ]; then update_host "$ip" "$domain"; fi
 done
 
-echo "${END_MARKER}" >> "${TEMP_HOSTS}"
+# 2. NIKE (Dev, QA, Prod)
+for env in dev qa prod; do
+    cluster="nike-$env"
+    domain="odoo.$env.nike.local"
+    ip=$(minikube ip -p "$cluster" 2>/dev/null || echo "")
+    if [ ! -z "$ip" ]; then update_host "$ip" "$domain"; fi
+done
 
-# Read the current hosts file, excluding our old section
-# We'll use sed to delete the range between markers if it exists
-if grep -q "${START_MARKER}" "${HOSTS_FILE}"; then
-    # Create temp file without our section
-    sed "/${START_MARKER}/,/${END_MARKER}/d" "${HOSTS_FILE}" > "${HOSTS_FILE}.tmp"
-    mv "${HOSTS_FILE}.tmp" "${HOSTS_FILE}"
-fi
+# 3. MCDONALDS (Dev, QA, Beta, Prod)
+for env in dev qa beta prod; do
+    cluster="mcdonalds-$env"
+    domain="odoo.$env.mcdonalds.local"
+    ip=$(minikube ip -p "$cluster" 2>/dev/null || echo "")
+    if [ ! -z "$ip" ]; then update_host "$ip" "$domain"; fi
+done
 
-# Append our new section
-cat "${TEMP_HOSTS}" >> "${HOSTS_FILE}"
-
-rm "${TEMP_HOSTS}"
-
-echo "Updated /etc/hosts with Minikube IPs."
+echo "Hosts file updated successfully."

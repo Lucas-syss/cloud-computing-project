@@ -1,60 +1,124 @@
 #!/bin/bash
 set -e
 
-CLUSTER_ID=$1
-CLIENT=$2
-ENV=$3
-DOMAIN=$4
-CERT_B64=$5
-KEY_B64=$6
-NAMESPACE="${CLIENT}-${ENV}"
+# 1. READ INPUTS
+CLUSTER_NAME="${CLUSTER_NAME:-}"
+CLIENT="${CLIENT:-}"
+ENV="${ENV:-}"
+DOMAIN="${DOMAIN:-}"
+KUBE_CERT="${KUBE_CERT:-}"
+KUBE_KEY="${KUBE_KEY:-}"
 
-echo "[${CLUSTER_ID}] Deploying Odoo for ${DOMAIN}..."
+echo "[$CLUSTER_NAME] Deploying Odoo (Sidecar Mode) for $DOMAIN..."
 
-# 1. Switch context
-kubectl config use-context "${CLUSTER_ID}"
+# 2. CONFIGURE KUBECTL
+minikube profile "$CLUSTER_NAME" || exit 1
 
-# 2. Ensure Ingress Addon is enabled and ready
-if ! minikube addons list -p "${CLUSTER_ID}" | grep -q "ingress: enabled"; then
-    echo "Enabling ingress addon..."
-    minikube addons enable ingress -p "${CLUSTER_ID}"
-fi
+# 3. NAMESPACE
+kubectl create namespace "$CLUSTER_NAME" --dry-run=client -o yaml | kubectl apply -f -
 
-# Wait for ingress controller to be fully ready
-echo "Waiting for ingress controller..."
+# --- WAIT FOR INGRESS CONTROLLER ---
+echo "[$CLUSTER_NAME] Waiting for Ingress Controller to be ready..."
 kubectl wait --namespace ingress-nginx \
   --for=condition=ready pod \
   --selector=app.kubernetes.io/component=controller \
-  --timeout=300s || echo "Warning: Ingress wait timed out, proceeding anyway..."
+  --timeout=180s
+# ----------------------------------------
 
-# 3. Create Namespace
-kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+# 4. CREATE TLS SECRET
+CERT_B64=$(echo "$KUBE_CERT" | base64 -w0)
+KEY_B64=$(echo "$KUBE_KEY" | base64 -w0)
 
-# 4. Create TLS Secret
-echo "${CERT_B64}" | base64 -d > "certs/${DOMAIN}.crt"
-echo "${KEY_B64}" | base64 -d > "certs/${DOMAIN}.key"
+cat <<YAML | kubectl apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: odoo-tls
+  namespace: $CLUSTER_NAME
+type: kubernetes.io/tls
+data:
+  tls.crt: $CERT_B64
+  tls.key: $KEY_B64
+YAML
 
-# Create certs dir if not exists (it should be created by script if not)
-mkdir -p certs
+# 5. DEPLOY ODOO + POSTGRES 
+cat <<YAML | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: odoo-stack
+  namespace: $CLUSTER_NAME
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: odoo-stack
+  template:
+    metadata:
+      labels:
+        app: odoo-stack
+    spec:
+      containers:
+      # --- Container 1: Database ---
+      - name: db
+        image: postgres:15
+        env:
+        - name: POSTGRES_DB
+          value: postgres
+        - name: POSTGRES_PASSWORD
+          value: odoo
+        - name: POSTGRES_USER
+          value: odoo
+        ports:
+        - containerPort: 5432
+        
+      # --- Container 2: Odoo App ---
+      - name: odoo
+        image: odoo:16.0
+        ports:
+        - containerPort: 8069
+        env:
+        - name: HOST
+          value: "localhost"
+        - name: USER
+          value: "odoo"
+        - name: PASSWORD
+          value: "odoo"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: odoo
+  namespace: $CLUSTER_NAME
+spec:
+  selector:
+    app: odoo-stack
+  ports:
+    - protocol: TCP
+      port: 8069
+      targetPort: 8069
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: odoo-ingress
+  namespace: $CLUSTER_NAME
+spec:
+  tls:
+  - hosts:
+      - $DOMAIN
+    secretName: odoo-tls
+  rules:
+  - host: $DOMAIN
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: odoo
+            port:
+              number: 8069
+YAML
 
-kubectl create secret tls odoo-tls \
-  --cert="certs/${DOMAIN}.crt" \
-  --key="certs/${DOMAIN}.key" \
-  -n "${NAMESPACE}" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-rm "certs/${DOMAIN}.crt" "certs/${DOMAIN}.key"
-
-# 5. Apply Manifests using envsubst
-export NAMESPACE
-export DOMAIN
-
-# We need to make sure we don't substitute $ in the wrong places if any (yaml doesn't usually have $, but good to be careful)
-# Using envsubst to replace only ${NAMESPACE} and ${DOMAIN} is safer if we had other vars, but here we can replace all.
-envsubst < templates/odoo-stack.yaml.tmpl | kubectl apply -f -
-
-# 6. Verify Rollout
-kubectl rollout status deployment/odoo -n "${NAMESPACE}" --timeout=120s
-kubectl rollout status statefulset/db -n "${NAMESPACE}" --timeout=120s
-
-echo "Deployment for ${DOMAIN} completed successfully."
+echo "[$CLUSTER_NAME] Deployment complete."
