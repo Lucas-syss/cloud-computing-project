@@ -1,7 +1,7 @@
-.PHONY: init apply destroy update-hosts validate test status clean
+.PHONY: init apply destroy update-hosts validate test status clean repo-update
 
 init:
-	terraform init
+	terraform init -upgrade
 
 apply: init
 	terraform apply -auto-approve -parallelism=1

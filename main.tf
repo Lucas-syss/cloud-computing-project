@@ -1,6 +1,10 @@
 terraform {
   required_version = ">= 1.0.0"
   required_providers {
+    minikube = {
+      source  = "scott-the-programmer/minikube"
+      version = "0.4.4"
+    }
     null = {
       source  = "hashicorp/null"
       version = ">= 3.0"
@@ -16,9 +20,31 @@ terraform {
   }
 }
 
+provider "minikube" {
+  kubernetes_version = "v1.30.0"
+}
+
 provider "null" {}
 provider "local" {}
 provider "tls" {}
+
+variable "clients" {
+  description = "Map of clients and their environments"
+  type = map(object({
+    environments = list(string)
+  }))
+  default = {
+    "airbnb" = {
+      environments = ["dev", "prod"]
+    }
+    "nike" = {
+      environments = ["dev", "qa", "prod"]
+    }
+    "mcdonalds" = {
+      environments = ["dev", "qa", "beta", "prod"]
+    }
+  }
+}
 
 locals {
   deployments = flatten([
@@ -58,51 +84,53 @@ resource "tls_self_signed_cert" "odoo" {
   ]
 }
 
-resource "null_resource" "minikube_cluster" {
+# 2. Provision Minikube Clusters
+resource "minikube_cluster" "cluster" {
   for_each = { for item in local.deployments : item.id => item }
 
-  triggers = {
-    cluster_name = each.value.id
-  }
-
-  provisioner "local-exec" {
-    
-    command = "minikube start -p ${each.value.id} --driver=docker --container-runtime=docker --force --memory 1800 --cpus 2"
-  }
-
-  provisioner "local-exec" {
-    when    = destroy
-    command = "minikube delete -p ${self.triggers.cluster_name}"
-  }
+  driver       = "docker"
+  cluster_name = each.value.id
+  addons = [
+    "ingress",
+    "default-storageclass",
+    "storage-provisioner"
+  ]
+  
+  # Resource limits as per standard practice, configurable if needed but hardcoded for now
+  memory = "2048mb"
+  cpus   = 2
 }
 
+# 3. Deploy Odoo Application (Using shell script wrapper for kubectl)
+# We use this because the kubernetes provider cannot be dynamic in a for_each
 resource "null_resource" "odoo_deploy" {
   for_each = { for item in local.deployments : item.id => item }
 
-  depends_on = [null_resource.minikube_cluster]
+  depends_on = [minikube_cluster.cluster]
 
   triggers = {
     cluster_name  = each.value.id
     domain        = each.value.domain
     cert_pem      = tls_self_signed_cert.odoo[each.key].cert_pem
     key_pem       = tls_private_key.odoo[each.key].private_key_pem
-    template_hash = sha1(file("templates/odoo-stack.yaml.tmpl"))
+    template_hash = sha1(file("${path.module}/templates/odoo-stack.yaml.tmpl"))
+    script_hash   = sha1(file("${path.module}/scripts/deploy_odoo.sh"))
   }
 
   provisioner "local-exec" {
-    command = "bash scripts/deploy_odoo.sh '${each.value.id}' '${each.value.client}' '${each.value.env}' '${each.value.domain}' '${base64encode(tls_self_signed_cert.odoo[each.key].cert_pem)}' '${base64encode(tls_private_key.odoo[each.key].private_key_pem)}'"
+    command = "bash ${path.module}/scripts/deploy_odoo.sh '${each.value.id}' '${each.value.client}' '${each.value.env}' '${each.value.domain}' '${base64encode(tls_self_signed_cert.odoo[each.key].cert_pem)}' '${base64encode(tls_private_key.odoo[each.key].private_key_pem)}'"
   }
 }
 
-# 4. Update local /etc/hosts
+# 4. Update local /etc/hosts for validation
 resource "null_resource" "update_hosts" {
-  depends_on = [null_resource.odoo_deploy]
+  depends_on = [minikube_cluster.cluster] # Needs IPs
   
   triggers = {
-    deployments = join(",", [for item in local.deployments : item.domain])
+    always_run = timestamp()
   }
 
   provisioner "local-exec" {
-    command = "bash scripts/update_hosts.sh"
+    command = "bash ${path.module}/scripts/update_hosts.sh"
   }
 }
