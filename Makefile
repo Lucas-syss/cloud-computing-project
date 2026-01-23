@@ -32,6 +32,8 @@ destroy-all:
 	terraform workspace select nike && terraform destroy -auto-approve
 	terraform workspace select mcdonalds && terraform destroy -auto-approve
 	minikube delete --all
+make validate: 
+	./scripts/validate.sh
 
 update-hosts:
 	./scripts/update_hosts.sh

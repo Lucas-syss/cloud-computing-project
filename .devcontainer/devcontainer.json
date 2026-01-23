@@ -28,7 +28,7 @@
 	// "forwardPorts": [],
 
 	// Use 'postCreateCommand' to run commands after the container is created.
-	// "postCreateCommand": "docker --version",
+		"postCreateCommand": "echo 'ulimit -n 65535' >> ~/.bashrc && ulimit -n 65535 && sudo sysctl fs.inotify.max_user_instances=8192 && sudo sysctl fs.inotify.max_user_watches=524288 && make init",
 
 	// Configure tool-specific properties.
 	// "customizations": {},

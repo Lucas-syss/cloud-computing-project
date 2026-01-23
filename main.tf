@@ -78,13 +78,11 @@ resource "null_resource" "odoo_deploy" {
       CLIENT       = local.current_client
       ENV          = each.key
       DOMAIN       = "odoo.${each.key}.${local.current_client}.local"
-      # Terraform handles the multiline strings correctly here
       KUBE_CERT    = minikube_cluster.cluster[each.key].client_certificate
       KUBE_KEY     = minikube_cluster.cluster[each.key].client_key
     }
 
     # 2. Run the script WITHOUT passing arguments
-    # The script now reads the environment variables defined above
     command = "bash ./scripts/deploy_odoo.sh"
   }
 }
