@@ -8,6 +8,10 @@ terraform {
       source  = "hashicorp/kubernetes"
       version = ">= 2.0.0"
     }
+    tls = {
+      source = "hashicorp/tls"
+      version = ">= 4.0.0"
+    }
     null = {
       source = "hashicorp/null"
     }
@@ -29,13 +33,9 @@ variable "client_config" {
 }
 
 # 2. Determine Scope based on Workspace
-# If workspace is "default", we default to empty or error out. 
-# We expect workspace to be "airbnb", "nike", or "mcdonalds".
 locals {
   current_client = terraform.workspace
-  
   # Look up the environments for the current workspace
-  # If workspace doesn't match a client key, return empty list (safe fallback)
   environments = lookup(var.client_config, local.current_client, [])
 }
 
@@ -44,13 +44,12 @@ resource "minikube_cluster" "cluster" {
   for_each = toset(local.environments)
 
   driver       = "docker"
-  cluster_name = "${local.current_client}-${each.key}" # e.g. airbnb-dev
+  cluster_name = "${local.current_client}-${each.key}"
   
-  # Increased memory to 1600mb to prevent Odoo Crashes
+  # Memory increased to prevent Odoo crashes
   memory       = "1600mb"
   cpus         = 2
   
-  # Network settings
   cni = "bridge"
   addons = [
     "ingress",
@@ -59,7 +58,32 @@ resource "minikube_cluster" "cluster" {
   ]
 }
 
-# 4. Deploy Odoo (Using the script)
+# 4. Generate TLS Certificates
+resource "tls_private_key" "key" {
+  for_each  = toset(local.environments)
+  algorithm = "RSA"
+  rsa_bits  = 2048
+}
+
+resource "tls_self_signed_cert" "cert" {
+  for_each        = toset(local.environments)
+  private_key_pem = tls_private_key.key[each.key].private_key_pem
+
+  subject {
+    common_name  = "odoo.${each.key}.${local.current_client}.local"
+    organization = "Cloud Platform Engineering"
+  }
+
+  validity_period_hours = 8760 # 1 Year
+
+  allowed_uses = [
+    "key_encipherment",
+    "digital_signature",
+    "server_auth",
+  ]
+}
+
+# 5. Deploy Odoo (Using the script)
 resource "null_resource" "odoo_deploy" {
   for_each = minikube_cluster.cluster
 
@@ -67,22 +91,21 @@ resource "null_resource" "odoo_deploy" {
 
   triggers = {
     cluster_id  = each.value.cluster_name
-    # Update hash to force re-run when script changes
     script_hash = filesha256("${path.module}/scripts/deploy_odoo.sh")
+    cert_hash   = sha256(tls_self_signed_cert.cert[each.key].cert_pem)
   }
 
   provisioner "local-exec" {
-    # 1. Pass data securely via Environment Variables
     environment = {
       CLUSTER_NAME = each.value.cluster_name
       CLIENT       = local.current_client
       ENV          = each.key
       DOMAIN       = "odoo.${each.key}.${local.current_client}.local"
-      KUBE_CERT    = minikube_cluster.cluster[each.key].client_certificate
-      KUBE_KEY     = minikube_cluster.cluster[each.key].client_key
+      # Pass the generated certificate and key instead of minikube client certs
+      KUBE_CERT    = tls_self_signed_cert.cert[each.key].cert_pem
+      KUBE_KEY     = tls_private_key.key[each.key].private_key_pem
     }
 
-    # 2. Run the script WITHOUT passing arguments
     command = "bash ./scripts/deploy_odoo.sh"
   }
 }

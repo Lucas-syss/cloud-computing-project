@@ -41,25 +41,37 @@ data:
   tls.key: $KEY_B64
 YAML
 
-# 5. DEPLOY ODOO + POSTGRES 
+# 5. DEPLOY POSTGRES (StatefulSet + Service)
 cat <<YAML | kubectl apply -f -
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: v1
+kind: Service
 metadata:
-  name: odoo-stack
+  name: db
   namespace: $CLUSTER_NAME
 spec:
-  replicas: 1
+  ports:
+  - port: 5432
+  selector:
+    app: db
+  clusterIP: None
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db
+  namespace: $CLUSTER_NAME
+spec:
   selector:
     matchLabels:
-      app: odoo-stack
+      app: db
+  serviceName: "db"
+  replicas: 1
   template:
     metadata:
       labels:
-        app: odoo-stack
+        app: db
     spec:
       containers:
-      # --- Container 1: Database ---
       - name: db
         image: postgres:15
         env:
@@ -71,15 +83,34 @@ spec:
           value: odoo
         ports:
         - containerPort: 5432
-        
-      # --- Container 2: Odoo App ---
+          name: postgres
+YAML
+
+# 6. DEPLOY ODOO (Deployment + Ingress)
+cat <<YAML | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: odoo
+  namespace: $CLUSTER_NAME
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: odoo
+  template:
+    metadata:
+      labels:
+        app: odoo
+    spec:
+      containers:
       - name: odoo
         image: odoo:16.0
         ports:
         - containerPort: 8069
         env:
         - name: HOST
-          value: "localhost"
+          value: "db"
         - name: USER
           value: "odoo"
         - name: PASSWORD
@@ -92,7 +123,7 @@ metadata:
   namespace: $CLUSTER_NAME
 spec:
   selector:
-    app: odoo-stack
+    app: odoo
   ports:
     - protocol: TCP
       port: 8069
@@ -121,4 +152,13 @@ spec:
               number: 8069
 YAML
 
-echo "[$CLUSTER_NAME] Deployment complete."
+echo "[$CLUSTER_NAME] Deployment applied. Waiting for rollout..."
+
+# 7. WAIT FOR RESOURCES
+# Wait for DB
+kubectl rollout status statefulset/db --namespace "$CLUSTER_NAME" --timeout=300s
+
+# Wait for Odoo
+kubectl rollout status deployment/odoo --namespace "$CLUSTER_NAME" --timeout=300s
+
+echo "[$CLUSTER_NAME] Deployment complete and ready."
